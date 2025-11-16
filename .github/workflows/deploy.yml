@@ -24,12 +24,12 @@ jobs:
         with:
           node-version: '18'
 
-      # package.json이 있을 경우만 install + build 수행
+      # package.json이 있을 경우만 install + build 수행 (npm ci -> npm install 로 변경)
       - name: Build (if needed)
         run: |
           if [ -f package.json ]; then
             echo "package.json found — installing dependencies..."
-            npm ci
+            npm install
             if npm run | grep -q " build"; then
               echo "build script detected — running npm run build..."
               npm run build || true
@@ -40,7 +40,7 @@ jobs:
             echo "No package.json found — skipping frontend build."
           fi
 
-      # build / dist / out 중 존재하는 폴더 자동 탐색
+      # build / dist / out 중 존재하는 폴더 자동 탐색 (없으면 루트 .)
       - name: Pick deploy dir (build/dist/out or .)
         id: pick
         run: |
@@ -61,6 +61,7 @@ jobs:
           aws-secret-access-key: ${{ secrets.SANDWICH_USER_AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      # (선택) 추가 파일 동기화: s3://.../deploy/ -> ./additional/
       - name: Download additional files from S3
         run: |
           mkdir -p additional
@@ -72,14 +73,21 @@ jobs:
 
       - name: Create ECS Service
         run: |
-          aws ecs create-service             --cluster sandwich-${{ github.repository_owner }}-${{ github.event.repository.name }}             --service-name sandwich-${{ github.repository_owner }}-${{ github.event.repository.name }}             --task-definition sandwich-${{ github.repository_owner }}-${{ github.event.repository.name }}             --desired-count 1             --launch-type FARGATE             --network-configuration "awsvpcConfiguration={subnets=[subnet-0c63ddf51361003c7],securityGroups=[sg-05757f4e3849d99cf],assignPublicIp=ENABLED}" || true
+          aws ecs create-service \
+            --cluster sandwich-${{ github.repository_owner }}-${{ github.event.repository.name }} \
+            --service-name sandwich-${{ github.repository_owner }}-${{ github.event.repository.name }} \
+            --task-definition sandwich-${{ github.repository_owner }}-${{ github.event.repository.name }} \
+            --desired-count 1 \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[subnet-0c63ddf51361003c7],securityGroups=[sg-05757f4e3849d99cf],assignPublicIp=ENABLED}" || true
 
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Create ECR repository if not exists
         run: |
-          aws ecr describe-repositories --repository-names "sandwich-user-projects/${{ env.USER_ID }}-${{ env.PROJECT_ID }}" ||           aws ecr create-repository --repository-name "sandwich-user-projects/${{ env.USER_ID }}-${{ env.PROJECT_ID }}"
+          aws ecr describe-repositories --repository-names "sandwich-user-projects/${{ env.USER_ID }}-${{ env.PROJECT_ID }}" || \
+          aws ecr create-repository --repository-name "sandwich-user-projects/${{ env.USER_ID }}-${{ env.PROJECT_ID }}"
 
       - name: Build and Push Docker image (only if Dockerfile exists)
         run: |
@@ -101,7 +109,8 @@ jobs:
           SRC="${{ steps.pick.outputs.dir }}"
           if [ "$SRC" = "." ]; then
             echo "Deploying repository root to S3..."
-            aws s3 sync . "s3://${{ env.S3_BUCKET }}/${{ env.USER_ID }}/${{ env.PROJECT_ID }}/"               --exclude ".git/*" --exclude ".github/*" --exclude "node_modules/*"
+            aws s3 sync . "s3://${{ env.S3_BUCKET }}/${{ env.USER_ID }}/${{ env.PROJECT_ID }}/" \
+              --exclude ".git/*" --exclude ".github/*" --exclude "node_modules/*"
           else
             echo "Deploying $SRC folder to S3..."
             aws s3 sync "$SRC/" "s3://${{ env.S3_BUCKET }}/${{ env.USER_ID }}/${{ env.PROJECT_ID }}/" --delete
@@ -109,5 +118,6 @@ jobs:
 
       - name: Invalidate CloudFront cache
         run: |
-          echo "Invalidating CloudFront cache..."
-          aws cloudfront create-invalidation             --distribution-id ${{ secrets.SANDWICH_USER_CLOUDFRONT_DISTRIBUTION_ID }}             --paths "/${{ env.USER_ID }}/${{ env.PROJECT_ID }}/*"
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ secrets.SANDWICH_USER_CLOUDFRONT_DISTRIBUTION_ID }} \
+            --paths "/${{ env.USER_ID }}/${{ env.PROJECT_ID }}/*"
